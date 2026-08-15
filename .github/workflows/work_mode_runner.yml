@@ -18,6 +18,10 @@ on:
       prompt:
         description: 'User Prompt'
         required: true
+      tool_calls:
+        description: 'Initial tool calls'
+        required: false
+        default: ''
 
 jobs:
   agentic-loop:
@@ -64,6 +68,7 @@ jobs:
           CHAT_ID: ${{ github.event.inputs.chat_id }}
           USER_ID: ${{ github.event.inputs.user_id }}
           PROMPT: ${{ github.event.inputs.prompt }}
+          TOOL_CALLS: ${{ github.event.inputs.tool_calls }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           SUPABASE_WEBHOOK_URL: ${{ secrets.SUPABASE_URL }}/functions/v1/work-webhook
         run: |

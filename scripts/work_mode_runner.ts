@@ -6,6 +6,7 @@ const CHAT_ID = Deno.env.get("CHAT_ID") || "";
 const PROMPT = Deno.env.get("PROMPT") || "";
 const MISTRAL_API_KEY = Deno.env.get("MISTRAL_API_KEY") || "";
 const SUPABASE_WEBHOOK_URL = Deno.env.get("SUPABASE_WEBHOOK_URL") || "";
+const TOOL_CALLS = Deno.env.get("TOOL_CALLS") || "";
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -168,6 +169,34 @@ Workspace is at ${WORKSPACE_DIR}. Always use the provided tools to execute the u
 
   let currentReasoning = "";
   let currentContent = "";
+  let initialToolCalls: any[] | null = null;
+
+  try {
+    if (TOOL_CALLS) {
+      initialToolCalls = JSON.parse(TOOL_CALLS);
+    }
+  } catch (e) {
+    console.error("Failed to parse TOOL_CALLS", e);
+  }
+
+  if (initialToolCalls && initialToolCalls.length > 0) {
+    // We already have initial tool calls from Supabase Edge Function
+    messages.push({
+      role: "assistant",
+      content: "",
+      tool_calls: initialToolCalls
+    });
+    
+    // Fake response object so we fall into the tool execution block below
+    // and then continue to the loop
+    const response = {
+       fullContent: "",
+       fullReasoning: "",
+       toolCalls: initialToolCalls
+    };
+    
+    await processAgentResponse(messages, response);
+  }
 
   while (true) {
     const response = await callMistral(messages);
@@ -182,42 +211,7 @@ Workspace is at ${WORKSPACE_DIR}. Always use the provided tools to execute the u
       break;
     }
 
-    // Execute tools
-    messages.push({
-      role: "assistant",
-      content: fullContent || "",
-      tool_calls: toolCalls
-    });
-
-    for (const tc of toolCalls) {
-      if (tc.type === "function") {
-        const name = tc.function.name;
-        const args = JSON.parse(tc.function.arguments);
-        let result = "";
-
-        await sendWebhook("status", { status: `Executing ${name}...` });
-
-        try {
-          if (name === "bash_exec") {
-            const command = new Deno.Command("bash", { args: ["-c", args.command] });
-            const output = await command.output();
-            result = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
-          } else if (name === "write_file") {
-            await Deno.writeTextFile(args.path, args.content);
-            result = `File successfully written to ${args.path}`;
-          }
-        } catch (e: any) {
-          result = `Error: ${e.message}`;
-        }
-
-        messages.push({
-          role: "tool",
-          name: name,
-          tool_call_id: tc.id,
-          content: result || "Success (no output)"
-        });
-      }
-    }
+    await processAgentResponse(messages, response);
   }
 
   // Finalize
@@ -226,6 +220,50 @@ Workspace is at ${WORKSPACE_DIR}. Always use the provided tools to execute the u
     content_full: currentContent.trim(),
     reasoning_full: currentReasoning.trim()
   });
+}
+
+async function processAgentResponse(messages: any[], response: any) {
+  const { fullContent, toolCalls } = response;
+  
+  messages.push({
+    role: "assistant",
+    content: fullContent || "",
+    tool_calls: toolCalls
+  });
+
+  for (const tc of toolCalls) {
+    if (tc.type === "function") {
+      const name = tc.function.name;
+      let args: any = {};
+      try {
+         args = JSON.parse(tc.function.arguments);
+      } catch (e) {}
+      
+      let result = "";
+
+      await sendWebhook("status", { status: `Executing ${name}...` });
+
+      try {
+        if (name === "bash_exec") {
+          const command = new Deno.Command("bash", { args: ["-c", args.command] });
+          const output = await command.output();
+          result = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        } else if (name === "write_file") {
+          await Deno.writeTextFile(args.path, args.content);
+          result = `File successfully written to ${args.path}`;
+        }
+      } catch (e: any) {
+        result = `Error: ${e.message}`;
+      }
+
+      messages.push({
+        role: "tool",
+        name: name,
+        tool_call_id: tc.id,
+        content: result || "Success (no output)"
+      });
+    }
+  }
 }
 
 // 1. Execute the initial prompt
