@@ -1,0 +1,70 @@
+name: Work Mode Sandbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel_id:
+        description: 'Supabase Realtime Channel ID'
+        required: true
+      message_id:
+        description: 'ID of the new assistant message'
+        required: true
+      chat_id:
+        description: 'ID of the chat'
+        required: true
+      user_id:
+        description: 'ID of the user'
+        required: true
+      prompt:
+        description: 'User Prompt'
+        required: true
+
+jobs:
+  agentic-loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+
+      - name: Mount Google Drive Workspace
+        env:
+          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
+          USER_ID: ${{ github.event.inputs.user_id }}
+        run: |
+          echo "Setting up rclone..."
+          sudo apt-get update && sudo apt-get install -y rclone fuse
+          
+          # Create rclone config from secret
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONFIG_DATA" > ~/.config/rclone/rclone.conf
+          
+          echo "Mounting user specific workspace..."
+          sudo mkdir -p /mnt/presist
+          sudo chmod 777 /mnt/presist
+          
+          # Mount the user's specific folder from Google Drive to /mnt/presist
+          # Assumes the rclone remote is named 'gdrive' and the path is 'Workspaces/{user_id}'
+          rclone mount gdrive:Workspaces/${USER_ID} /mnt/presist --daemon --vfs-cache-mode writes --allow-other || echo "Rclone mount failed (missing config?). Falling back to local storage..."
+          
+          # Symlink /mnt/presist to /home/stable as requested
+          ln -s /mnt/presist /home/runner/stable
+          echo "Workspace successfully setup."
+
+      - name: Run Agent Loop
+        env:
+          CHANNEL_ID: ${{ github.event.inputs.channel_id }}
+          MESSAGE_ID: ${{ github.event.inputs.message_id }}
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          USER_ID: ${{ github.event.inputs.user_id }}
+          PROMPT: ${{ github.event.inputs.prompt }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          SUPABASE_WEBHOOK_URL: ${{ secrets.SUPABASE_URL }}/functions/v1/work-webhook
+        run: |
+          deno run --allow-net --allow-env --allow-run --allow-read --allow-write scripts/work_mode_runner.ts
