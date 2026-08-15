@@ -152,6 +152,8 @@ async function callMistral(messages: any[]) {
   return { fullContent, fullReasoning, toolCalls };
 }
 
+const WORKSPACE_DIR = Deno.env.get("WORKSPACE_DIR") || "/home/runner/stable";
+
 async function executeAgentLoop(prompt: string) {
   await sendWebhook("status", { status: "Thinking..." });
 
@@ -159,7 +161,7 @@ async function executeAgentLoop(prompt: string) {
     {
       role: "system",
       content: `You are an expert developer AI in 'Work Mode' running inside an isolated Linux sandbox.
-Workspace is at /home/runner/stable. Always use the provided tools to execute the user's request.`,
+Workspace is at ${WORKSPACE_DIR}. Always use the provided tools to execute the user's request.`,
     },
     { role: "user", content: prompt },
   ];
