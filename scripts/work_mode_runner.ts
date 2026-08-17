@@ -1,14 +1,19 @@
 import { load } from "https://deno.land/std@0.210.0/dotenv/mod.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const CHANNEL_ID = Deno.env.get("CHANNEL_ID") || "";
-const MESSAGE_ID = Deno.env.get("MESSAGE_ID") || "";
+let CHANNEL_ID = Deno.env.get("CHANNEL_ID") || "";
+let MESSAGE_ID = Deno.env.get("MESSAGE_ID") || "";
 const CHAT_ID = Deno.env.get("CHAT_ID") || "";
-const PROMPT = Deno.env.get("PROMPT") || "";
 const MISTRAL_API_KEY = Deno.env.get("MISTRAL_API_KEY") || "";
 const SUPABASE_WEBHOOK_URL = Deno.env.get("SUPABASE_WEBHOOK_URL") || "";
-const TOOL_CALLS = Deno.env.get("TOOL_CALLS") || "";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
+const INITIAL_PROMPT = Deno.env.get("PROMPT") || "";
+const INITIAL_TOOL_CALLS = Deno.env.get("TOOL_CALLS") || "";
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 async function sendWebhook(type: string, data: any = {}) {
   try {
@@ -105,11 +110,9 @@ async function callMistral(messages: any[]) {
             const delta = data.choices?.[0]?.delta;
             
             if (delta) {
-              // Parse tool_calls
               if (delta.tool_calls) {
                 if (!toolCalls) toolCalls = delta.tool_calls;
                 else {
-                  // Merge tool call chunks
                   for (const tc of delta.tool_calls) {
                     const existing = toolCalls.find((t: any) => t.index === tc.index);
                     if (existing) {
@@ -143,7 +146,6 @@ async function callMistral(messages: any[]) {
               }
             }
           } catch (e) {
-            // Ignore parse errors for incomplete chunks
           }
         }
       }
@@ -155,14 +157,15 @@ async function callMistral(messages: any[]) {
 
 const WORKSPACE_DIR = Deno.env.get("WORKSPACE_DIR") || "/home/runner/stable";
 
-async function executeAgentLoop(prompt: string) {
+async function executeAgentLoop(prompt: string, toolCallsStr: string) {
   await sendWebhook("status", { status: "Thinking..." });
 
   const messages: any[] = [
     {
       role: "system",
       content: `You are an expert developer AI in 'Work Mode' running inside an isolated Linux sandbox.
-Workspace is at ${WORKSPACE_DIR}. Always use the provided tools to execute the user's request.`,
+Workspace is at ${WORKSPACE_DIR}.
+You have FULL system access. You CAN and MUST execute bash commands and write files using the provided tools to fulfill the user's requests. Never apologize or say you cannot execute commands, because you are explicitly equipped with tools to do so. CRITICAL RULE: You MUST always respond to the user first by explaining your thought process and what you are going to do BEFORE you output any tool call. For example: "I will run ls to check the environment" followed by the tool call.`,
     },
     { role: "user", content: prompt },
   ];
@@ -172,23 +175,20 @@ Workspace is at ${WORKSPACE_DIR}. Always use the provided tools to execute the u
   let initialToolCalls: any[] | null = null;
 
   try {
-    if (TOOL_CALLS) {
-      initialToolCalls = JSON.parse(TOOL_CALLS);
+    if (toolCallsStr) {
+      initialToolCalls = typeof toolCallsStr === 'string' ? JSON.parse(toolCallsStr) : toolCallsStr;
     }
   } catch (e) {
     console.error("Failed to parse TOOL_CALLS", e);
   }
 
   if (initialToolCalls && initialToolCalls.length > 0) {
-    // We already have initial tool calls from Supabase Edge Function
     messages.push({
       role: "assistant",
       content: "",
       tool_calls: initialToolCalls
     });
     
-    // Fake response object so we fall into the tool execution block below
-    // and then continue to the loop
     const response = {
        fullContent: "",
        fullReasoning: "",
@@ -207,14 +207,12 @@ Workspace is at ${WORKSPACE_DIR}. Always use the provided tools to execute the u
     currentContent += fullContent + "\n";
 
     if (!toolCalls || toolCalls.length === 0) {
-      // Done
       break;
     }
 
     await processAgentResponse(messages, response);
   }
 
-  // Finalize
   await sendWebhook("done", {
     reply: currentContent.trim(),
     content_full: currentContent.trim(),
@@ -266,20 +264,39 @@ async function processAgentResponse(messages: any[], response: any) {
   }
 }
 
+let idleTimer: number | null = null;
+function resetIdleTimer() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    console.log("Idle timeout reached. Shutting down GitHub Action runner to save minutes.");
+    Deno.exit(0);
+  }, IDLE_TIMEOUT_MS);
+}
+
+const sessionChannelId = `work_chat_session_${CHAT_ID}`;
+const sessionChannel = supabase.channel(sessionChannelId);
+
+sessionChannel
+  .on("broadcast", { event: "ping" }, (payload) => {
+    console.log("Received ping, replying pong...");
+    sessionChannel.send({ type: "broadcast", event: "pong", payload: { runner: true } });
+  })
+  .on("broadcast", { event: "task" }, async (payload) => {
+    console.log("Received new task payload:", payload.payload);
+    const data = payload.payload;
+    if (data.messageId && data.channelId && data.prompt) {
+      resetIdleTimer();
+      MESSAGE_ID = data.messageId;
+      CHANNEL_ID = data.channelId;
+      await executeAgentLoop(data.prompt, data.toolCalls);
+    }
+  })
+  .subscribe();
+
 // 1. Execute the initial prompt
-console.log("Starting agent loop for prompt:", PROMPT);
-await executeAgentLoop(PROMPT);
+console.log("Starting agent loop for initial prompt...");
+await executeAgentLoop(INITIAL_PROMPT, INITIAL_TOOL_CALLS);
 
-// 2. Idle Timer for Auto-Destruction
+// 2. Start Idle Timer
 console.log(`Initial task complete. Entering idle mode for ${IDLE_TIMEOUT_MS / 1000} seconds...`);
-// In a fully implemented system, we would subscribe to Supabase Realtime here 
-// to listen for NEW messages from the user on this CHAT_ID, resetting the timer.
-
-const idleTimer = setTimeout(() => {
-  console.log("Idle timeout reached. Shutting down GitHub Action runner to save minutes.");
-  Deno.exit(0);
-}, IDLE_TIMEOUT_MS);
-
-// For now, since we haven't implemented the listener yet, we will just let the timer run out.
-// If you implement the listener: 
-// function resetIdleTimer() { clearTimeout(idleTimer); idleTimer = setTimeout(..., IDLE_TIMEOUT_MS); }
+resetIdleTimer();

@@ -71,5 +71,7 @@ jobs:
           TOOL_CALLS: ${{ github.event.inputs.tool_calls }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           SUPABASE_WEBHOOK_URL: ${{ secrets.SUPABASE_URL }}/functions/v1/work-webhook
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           deno run --allow-net --allow-env --allow-run --allow-read --allow-write scripts/work_mode_runner.ts
