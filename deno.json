@@ -1,1 +1,5 @@
-{\n  "tasks": {\n    "run-agent": "deno run --allow-net --allow-env --allow-run scripts/work_mode_runner.ts"\n  }\n}
+{
+  "tasks": {
+    "run-agent": "deno run --allow-net --allow-env --allow-run scripts/work_mode_runner.ts"
+  }
+}
